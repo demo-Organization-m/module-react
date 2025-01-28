@@ -113,7 +113,7 @@ jobs:
         id: changes
         run: |
           git fetch origin feature/demo
-          if git diff --exit-code HEAD origin/feature/demo -- . > /dev/null; then
+          if git diff --exit-code HEAD origin/devlopment -- . > /dev/null; then
             echo "should_deploy=true" >> $GITHUB_ENV
           else
             echo "should_deploy=false" >> $GITHUB_ENV
