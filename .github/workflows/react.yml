@@ -156,7 +156,6 @@ jobs:
       - name: Create package.json for Build
         if: env.should_deploy == 'true'
         run: |
-          cd sbuild
           VERSION=$(cat version.txt)
           echo '{
             "name": "react-app-build",
