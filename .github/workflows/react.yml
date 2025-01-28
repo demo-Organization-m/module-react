@@ -193,9 +193,13 @@ jobs:
         with:
           name: react-app-build
           path: ./downloaded-artifact
-              ls
-              pwd
-    
+      
+      - name: List downloaded directory and print working directory
+        run: |
+          echo "Current Working Directory: $(pwd)"
+          echo "Listing contents of the downloaded artifact directory:"
+          ls -la ./downloaded-artifact
+       
       # Step to extract the artifact
       - name: Extract Artifact (if .tgz file exists)
         run: |
