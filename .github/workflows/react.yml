@@ -180,30 +180,18 @@ jobs:
           npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
           npm publish
 
-      - name: Verify Build Directory Before Upload
-        if: env.should_deploy == 'true'
-        run: |
-          echo "Listing files in build directory before upload:"
-          ls -la build
-          pwd
-
-      - name: Prepare Artifact Directory
-        run: |
-          mkdir -p build-artifact
-          cp -r build Dockerfile public src package-lock.json package.json version.txt build-artifact/
-          
       - name: Upload Build Artifact to GitHub
         if: env.should_deploy == 'true'
         uses: actions/upload-artifact@v3
         with:
           name: react-app-build
           path: build/
-
           
+
   docker:
     name: Docker Build and Deploy
     runs-on: ubuntu-latest
-    needs: build_and_publish_artifact
+    needs:  build_and_publish_artifact
   
     steps:
       - name: Checkout Code
@@ -219,17 +207,6 @@ jobs:
       - name: Get Version from version.txt
         id: version
         run: echo "version=$(cat version.txt)" >> $GITHUB_ENV
-  
-      - name: Download Build Artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: react-app-build
-          path: ./downloaded-artifact
-  
-      - name: List Downloaded Files
-        run: |
-          echo "Verifying downloaded files:"
-          ls -la downloaded-artifact
   
       - name: Retrieve Existing Version from ECR
         id: ecr-version
@@ -247,16 +224,38 @@ jobs:
           echo "NEW_VERSION_TAG=$NEW_VERSION_TAG" >> $GITHUB_ENV
           echo "NEW_VERSION_TAG=$NEW_VERSION_TAG"
   
+      - name: Prepare Build Context
+        run: |
+          echo "Navigating to project directory:"
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          echo "Current directory:"
+          pwd
+          echo "Ensuring 'extracted-package' exists:"
+          if [ ! -d "extracted-package" ]; then
+            echo "'extracted-package' directory is missing! Creating it now..."
+            mkdir extracted-package
+          else
+            echo "'extracted-package' directory exists."
+          fi
+          echo "Copying everything to 'extracted-package' directory, excluding itself:"
+          find . -mindepth 1 -maxdepth 1 ! -name 'extracted-package' -exec cp -r {} extracted-package/ \;
+          echo "Listing files in the project directory:"
+          ls -la
+          echo "Verifying extracted-package contents:"
+          ls -la extracted-package
+      
+
       - name: Build Docker Image
         run: |
-          echo "Building Docker image with extracted artifact..."
-          docker build \
-            --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
-            -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
-            -t ${{ inputs.ecr-repo-name }}:latest \
-            ./downloaded-artifact
+          echo "Navigating to project directory:"
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          echo "Building Docker image..."
+          docker build --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
+          -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
+          -t ${{ inputs.ecr-repo-name }}:latest \
+          .
 
-
+  
       - name: Authenticate Docker with ECR
         run: |
           aws ecr get-login-password --region ${{ inputs.aws-region }} | \
