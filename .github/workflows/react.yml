@@ -51,21 +51,15 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          cd sbuild
           npm install
-          npm install --save-dev @babel/plugin-transform-private-property-in-object \
-            @babel/plugin-transform-optional-chaining \
-            @babel/plugin-transform-nullish-coalescing-operator \
-            @babel/plugin-transform-class-properties
+          npm install --save-dev @babel/plugin-transform-private-property-in-object @babel/plugin-transform-optional-chaining @babel/plugin-transform-nullish-coalescing-operator @babel/plugin-transform-class-properties
           npm install --save-dev @testing-library/react @testing-library/jest-dom
           npm audit fix || true
 
       - name: Run Unit Tests with Jest
-        run: |
-          cd sbuild
-          npm test -- --watchAll=false --coverage --forceExit
+        run: npm test -- --watchAll=false --coverage --forceExit
 
-  sonarqube:
+  build-test-sonar:
     name: SonarQube Scan
     runs-on: ubuntu-latest
     needs: test
@@ -80,9 +74,7 @@ jobs:
           node-version: '20'
 
       - name: Install Dependencies
-        run: |
-          cd sbuild
-          npm install
+        run: npm install
 
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@master
@@ -102,144 +94,116 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-  deploy_Artifact:
-    name: Deploy Artifact
+  build-artifact:
+    name: Build and Publish React App
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-  
-      - name: Set Up Node.js
+
+      - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
-  
-      - name: Check for Changes
-        id: changes
-        run: |
-          git fetch origin devlopment
-          if git diff --exit-code HEAD origin/devlopment -- . > /dev/null; then
-            echo "should_deploy=true" >> $GITHUB_ENV
-          else
-            echo "should_deploy=false" >> $GITHUB_ENV
-          fi
-  
-      - name: Set Deploy Output
-        id: set_deploy_output
-        run: echo "::set-output name=should_deploy::${{ env.should_deploy }}"
-  
-      - name: Increment Version
-        if: env.should_deploy == 'true'
-        run: | 
-          VERSION=$(cat version.txt)
-          NEW_VERSION=$(echo $VERSION | awk -F. -v OFS=. '{$NF++;print}')
-          echo $NEW_VERSION > version.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://${{ secrets.MY_GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git add version.txt
-          git commit -m "chore: bump version to $NEW_VERSION"
-          git push
-  
+
       - name: Install Dependencies
-        if: env.should_deploy == 'true'
-        run: |
-          cd sbuild
-          npm install
-  
+        run: npm install
+
       - name: Build React App
-        if: env.should_deploy == 'true'
-        run: |
-          cd sbuild
-          npm run build
-    
+        run: npm run build
+
       - name: Create package.json for Build
-        if: env.should_deploy == 'true'
         run: |
-          VERSION=$(cat version.txt)
-          cd sbuild
           echo '{
             "name": "react-app-build",
-            "version": "'$VERSION'",
+            "version": "1.0.2",
             "description": "React App Build Artifact",
             "main": "index.js",
             "license": "MIT"
           }' > build/package.json
-  
+
       - name: Configure AWS Credentials
-        if: env.should_deploy == 'true'
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to AWS CodeArtifact
+        run: |
+          aws codeartifact login \
+            --tool npm \
+            --repository ${{ inputs.npm-repository }} \
+            --domain ${{ inputs.aws-domain }} \
+            --domain-owner ${{ inputs.aws-domain-owner }}
+
+      - name: Debug .npmrc
+        run: cat ~/.npmrc
+
+      - name: Publish Build to AWS CodeArtifact
+        working-directory: ./build
+        env:
+          NPM_REGISTRY_URL: "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
+        run: |
+          npm set registry $NPM_REGISTRY_URL
+          npm publish
+
+          
+      - name: Upload Build Artifact to GitHub
+        uses: actions/upload-artifact@v3
+        with:
+          name: react-app-build
+          path: build/
+          
+      - name: Download and Unpack Published Package
+        env:
+          NPM_REGISTRY_URL: "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
+        run: |
+          # Configure npm registry to use CodeArtifact
+          npm set registry $NPM_REGISTRY_URL
+          
+          # Authenticate with CodeArtifact
+          aws codeartifact login \
+            --tool npm \
+            --repository ${{ inputs.npm-repository }} \
+            --domain ${{ inputs.aws-domain }} \
+            --domain-owner ${{ inputs.aws-domain-owner }}
+          
+          # Download the package as a .tgz file
+          npm pack react-app-build@1.0.2
+          
+          # Extract the contents of the .tgz file
+          mkdir extracted-package
+          tar -xzf react-app-build-1.0.2.tgz -C extracted-package --strip-components=1
+          
+          # List the extracted contents for debugging
+          ls -R extracted-package/
+          ls -la extracted-package
+          
+      - name: Debug Build Context
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "List files:"
+          ls -la
+
+  docker:
+    name: Docker Build and Deploy
+    runs-on: ubuntu-latest
+    needs: build-artifact
+  
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+  
+      - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ inputs.aws-region }}
   
-      - name: Login to AWS CodeArtifact
-        if: env.should_deploy == 'true'
-        run: |
-          cd sbuild
-          aws codeartifact login \
-            --tool npm \
-            --repository ${{ inputs.npm-repository }} \
-            --domain ${{ inputs.aws-domain }} \
-            --domain-owner ${{ inputs.aws-domain-owner }}
-  
-      - name: Publish Build to AWS CodeArtifact
-        if: env.should_deploy == 'true'
-        working-directory: ./sbuild
-        run: |
-          npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
-          npm publish
-        
-      - name: Upload Build Artifact to GitHub
-        if: env.should_deploy == 'true'
-        uses: actions/upload-artifact@v3
-        with:
-          name: react-app-build
-          path: ./sbuild
-
-      - name: Compress Build Artifacts
-        if: env.should_deploy == 'true'
-        working-directory: ./sbuild
-        run: |
-          if [ -d "./sbuild" ]; then
-            zip -r react-app-build.zip ./sbuild
-          else
-            echo "Build directory not found. Skipping compression."
-            exit 1
-          fi
-
-       # Step to download the artifact
-      - name: Download Build Artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: react-app-build
-          path: ./downloaded-artifact
-      
-      - name: List downloaded directory and print working directory
-        run: |
-          echo "Current Working Directory: $(pwd)"
-          echo "Listing contents of the downloaded artifact directory:"
-          ls -la ./downloaded-artifact
-       
-      # Step to extract the artifact
-      - name: Extract Artifact (if .tgz file exists)
-        run: |
-          if [ -f ./downloaded-artifact/*.tgz ]; then
-            mkdir -p extracted
-            tar -xzvf ./downloaded-artifact/*.tgz -C extracted
-            echo "Extracted files to ./extracted"
-          else
-            echo "No .tgz file found to extract."
-          fi
-  
-      # Step to print the current location
-      - name: List Extracted Files
-        run: |
-          echo "Listing contents of the extracted directory:"
-          ls -la ./extracted 
-          pwd
-    
       - name: Get Version from version.txt
         id: version
         run: echo "version=$(cat version.txt)" >> $GITHUB_ENV
@@ -263,7 +227,7 @@ jobs:
       - name: Prepare Build Context
         run: |
           echo "Navigating to project directory:"
-          cd /home/runner/work/react-app/react-app
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
           echo "Current directory:"
           pwd
           echo "Ensuring 'extracted-package' exists:"
@@ -279,16 +243,19 @@ jobs:
           ls -la
           echo "Verifying extracted-package contents:"
           ls -la extracted-package
-  
+    
+
+
       - name: Build Docker Image
         run: |
           echo "Navigating to project directory:"
-          cd /home/runner/work/react-app/react-app
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
           echo "Building Docker image..."
           docker build --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
           -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
           -t ${{ inputs.ecr-repo-name }}:latest \
           .
+
   
       - name: Authenticate Docker with ECR
         run: |
@@ -303,40 +270,67 @@ jobs:
             ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }}
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
-  
+
       - name: SSH to EC2 and deploy Docker container
         run: |
+          # Create a temporary SSH key file
           echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
           chmod 600 ec2_key.pem
+
+          # Add EC2's SSH host key to known_hosts to avoid host key verification issues
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
+
+          # SSH to the EC2 instance and run commands
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
+            # Install Docker if it's not installed
             if ! command -v docker &> /dev/null
             then
+              echo "Docker not found, installing..."
               sudo yum update -y docker 
               sudo yum install -y docker
               sudo service docker start
               sudo systemctl enable docker
+            else
+              echo "Docker is already installed"
             fi
+
+            # Add ec2-user to Docker group to allow non-root access to Docker
             sudo usermod -aG docker ec2-user
             newgrp docker
+
+            # Authenticate Docker to AWS ECR
             aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+            # Remove existing container with the same name (for React app)
             if [ "$(docker ps -aq -f name=react-container)" ]; then
+              echo "Removing existing container 'react-container'..."
               docker stop react-container
               docker rm react-container
             fi
+
+            # Pull the latest Docker image from ECR
+            echo "Pulling the latest Docker image..."
             docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-            docker run -d -p 8001:80 --name react-container ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
+
+            # Run the new container with the name 'react-container'
+            echo "Deploying the new container 'react-container'..."
+            - name: Run Docker Container
+              docker run -d -p 8001:80 --name react-container ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
+
+
+            # Verify the container is running
             if ! docker ps -q -f name=react-container; then
+              echo "Failed to start the container 'react-container'. Exiting."
               exit 1
             fi
+            echo "Container 'react-container' is running successfully."
           EOF
-  
+
       - name: List Docker Images on EC2
         run: |
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker images"
-  
+
       - name: List Running Containers on EC2
         run: |
-          ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker ps"
-  
+          ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker ps -a"
