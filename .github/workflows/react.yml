@@ -186,7 +186,32 @@ jobs:
         with:
           name: react-app-build
           path: build/
+
+       # Step to download the artifact
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: react-app-build
+          path: ./downloaded-artifact
   
+      # Step to extract the artifact
+      - name: Extract Artifact (if .tgz file exists)
+        run: |
+          if [ -f ./downloaded-artifact/*.tgz ]; then
+            mkdir -p extracted
+            tar -xzvf ./downloaded-artifact/*.tgz -C extracted
+            echo "Extracted files to ./extracted"
+          else
+            echo "No .tgz file found to extract."
+          fi
+  
+      # Step to print the current location
+      - name: List Extracted Files
+        run: |
+          echo "Listing contents of the extracted directory:"
+          ls -la ./extracted 
+          pwd
+    
       - name: Get Version from version.txt
         id: version
         run: echo "version=$(cat version.txt)" >> $GITHUB_ENV
