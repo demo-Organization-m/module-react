@@ -157,6 +157,7 @@ jobs:
         if: env.should_deploy == 'true'
         run: |
           VERSION=$(cat version.txt)
+          cd sbuild
           echo '{
             "name": "react-app-build",
             "version": "'$VERSION'",
