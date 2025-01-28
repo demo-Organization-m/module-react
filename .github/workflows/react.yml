@@ -112,16 +112,12 @@ jobs:
       - name: Check for Changes
         id: changes
         run: |
-          git fetch origin devlopment
-          if git diff --exit-code HEAD origin/devlopment -- . > /dev/null; then
+          git fetch origin development
+          if git diff --exit-code HEAD origin/development -- . > /dev/null; then
             echo "should_deploy=true" >> $GITHUB_ENV
           else
             echo "should_deploy=false" >> $GITHUB_ENV
           fi
-
-      - name: Set Deploy Output
-        id: set_deploy_output
-        run: echo "::set-output name=should_deploy::${{ env.should_deploy }}"
 
       - name: Increment Version
         if: env.should_deploy == 'true'
@@ -131,7 +127,7 @@ jobs:
           echo $NEW_VERSION > version.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://${{ secrets.MY_GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git remote set-url origin https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git add version.txt
           git commit -m "chore: bump version to $NEW_VERSION"
           git push
@@ -156,58 +152,39 @@ jobs:
             "license": "MIT"
           }' > build/package.json
 
-      - name: Configure AWS Credentials
-        if: env.should_deploy == 'true'
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ inputs.aws-region }}
-
-      - name: Login to AWS CodeArtifact
-        if: env.should_deploy == 'true'
-        run: |
-          aws codeartifact login \
-            --tool npm \
-            --repository ${{ inputs.npm-repository }} \
-            --domain ${{ inputs.aws-domain }} \
-            --domain-owner ${{ inputs.aws-domain-owner }}
-
-      - name: Publish Build to AWS CodeArtifact
-        if: env.should_deploy == 'true'
-        working-directory: ./build
-        run: |
-          npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
-          npm publish
-
       - name: Upload Build Artifact to GitHub
         if: env.should_deploy == 'true'
         uses: actions/upload-artifact@v3
         with:
           name: react-app-build
           path: build/
-          
 
   docker:
     name: Docker Build and Deploy
     runs-on: ubuntu-latest
-    needs:  build_and_publish_artifact
-  
+    needs: build_and_publish_artifact
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-  
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: react-app-build
+          path: ./build
+
       - name: Set up AWS CLI
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ inputs.aws-region }}
-  
+
       - name: Get Version from version.txt
         id: version
         run: echo "version=$(cat version.txt)" >> $GITHUB_ENV
-  
+
       - name: Retrieve Existing Version from ECR
         id: ecr-version
         run: |
@@ -216,51 +193,27 @@ jobs:
             --query 'imageDetails[].imageTags[]' \
             --output text | grep -o 'v[0-9]*' | sed 's/v//' | sort -n | tail -1 2>/dev/null || echo 0)
           echo "EXISTING_TAG=$EXISTING_TAG" >> $GITHUB_ENV
-  
+
       - name: Increment Version
         id: increment-version
         run: |
           NEW_VERSION_TAG=v$((EXISTING_TAG + 1))
           echo "NEW_VERSION_TAG=$NEW_VERSION_TAG" >> $GITHUB_ENV
           echo "NEW_VERSION_TAG=$NEW_VERSION_TAG"
-  
-      - name: Prepare Build Context
-        run: |
-          echo "Navigating to project directory:"
-          cd /home/runner/work/react-app/react-app
-          echo "Current directory:"
-          pwd
-          echo "Ensuring 'extracted-package' exists:"
-          if [ ! -d "extracted-package" ]; then
-            echo "'extracted-package' directory is missing! Creating it now..."
-            mkdir extracted-package
-          else
-            echo "'extracted-package' directory exists."
-          fi
-          echo "Copying everything to 'extracted-package' directory, excluding itself:"
-          find . -mindepth 1 -maxdepth 1 ! -name 'extracted-package' -exec cp -r {} extracted-package/ \;
-          echo "Listing files in the project directory:"
-          ls -la
-          echo "Verifying extracted-package contents:"
-          ls -la extracted-package
-      
 
       - name: Build Docker Image
         run: |
-          echo "Navigating to project directory:"
-          cd /home/runner/work/react-app/react-app
           echo "Building Docker image..."
           docker build --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
-          -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
-          -t ${{ inputs.ecr-repo-name }}:latest \
-          .
+            -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
+            -t ${{ inputs.ecr-repo-name }}:latest \
+            .
 
-  
       - name: Authenticate Docker with ECR
         run: |
           aws ecr get-login-password --region ${{ inputs.aws-region }} | \
           docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
-  
+
       - name: Tag and Push Docker Images
         run: |
           docker tag ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
@@ -270,53 +223,41 @@ jobs:
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }}
           docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
 
-      - name: SSH to EC2 and deploy Docker container
+      - name: SSH to EC2 and Deploy Docker Container
         run: |
-          # Create a temporary SSH key file
           echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
           chmod 600 ec2_key.pem
-
-          # Add EC2's SSH host key to known_hosts to avoid host key verification issues
-          mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
 
-          # SSH to the EC2 instance and run commands
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
-            # Install Docker if it's not installed
-            if ! command -v docker &> /dev/null
-            then
-              echo "Docker not found, installing..."
-              sudo yum update -y docker 
+            # Install Docker if not installed
+            if ! command -v docker &> /dev/null; then
+              sudo yum update -y
               sudo yum install -y docker
               sudo service docker start
               sudo systemctl enable docker
-            else
-              echo "Docker is already installed"
             fi
 
-            # Add ec2-user to Docker group to allow non-root access to Docker
+            # Add ec2-user to Docker group
             sudo usermod -aG docker ec2-user
             newgrp docker
 
             # Authenticate Docker to AWS ECR
-            aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+            aws ecr get-login-password --region ${{ inputs.aws-region }} | \
+            docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
 
-            # Remove existing container with the same name (for React app)
+            # Stop and remove existing container
             if [ "$(docker ps -aq -f name=react-container)" ]; then
-              echo "Removing existing container 'react-container'..."
               docker stop react-container
               docker rm react-container
             fi
 
-            # Pull the latest Docker image from ECR
-            echo "Pulling the latest Docker image..."
-            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
+            # Pull the latest Docker image
+            docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
 
-            # Run the new container with the name 'react-container'
-            echo "Deploying the new container 'react-container'..."
-            - name: Run Docker Container
-              docker run -d -p 8001:80 --name react-container ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-
+            # Run the new container
+            docker run -d -p 8001:80 --name react-container \
+              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
 
             # Verify the container is running
             if ! docker ps -q -f name=react-container; then
@@ -325,11 +266,3 @@ jobs:
             fi
             echo "Container 'react-container' is running successfully."
           EOF
-
-      - name: List Docker Images on EC2
-        run: |
-          ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker images"
-
-      - name: List Running Containers on EC2
-        run: |
-          ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker ps -a"
