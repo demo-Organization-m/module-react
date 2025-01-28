@@ -189,7 +189,6 @@ jobs:
         working-directory: ./sbuild
         run: |
           npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
-          cd sbuild
           npm publish
   
       - name: Upload Build Artifact to GitHub
