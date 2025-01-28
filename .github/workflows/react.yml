@@ -175,7 +175,7 @@ jobs:
   
       - name: Publish Build to AWS CodeArtifact
         if: env.should_deploy == 'true'
-        working-directory: .
+        working-directory: ./build
         run: |
           npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
           npm publish
