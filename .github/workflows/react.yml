@@ -227,7 +227,7 @@ jobs:
       - name: Prepare Build Context
         run: |
           echo "Navigating to project directory:"
-          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          cd /home/runner/work/react/react
           echo "Current directory:"
           pwd
           echo "Ensuring 'extracted-package' exists:"
