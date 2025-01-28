@@ -193,7 +193,9 @@ jobs:
         with:
           name: react-app-build
           path: ./downloaded-artifact
-  
+              ls
+              pwd
+    
       # Step to extract the artifact
       - name: Extract Artifact (if .tgz file exists)
         run: |
