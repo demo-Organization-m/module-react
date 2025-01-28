@@ -227,7 +227,7 @@ jobs:
       - name: Prepare Build Context
         run: |
           echo "Navigating to project directory:"
-          cd /home/runner/work/react/react
+          cd /home/runner/work/react-app/react-app
           echo "Current directory:"
           pwd
           echo "Ensuring 'extracted-package' exists:"
@@ -248,7 +248,7 @@ jobs:
       - name: Build Docker Image
         run: |
           echo "Navigating to project directory:"
-          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          cd /home/runner/work/react-app/react-app
           echo "Building Docker image..."
           docker build --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
           -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
