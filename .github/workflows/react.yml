@@ -130,7 +130,7 @@ jobs:
   
       - name: Increment Version
         if: env.should_deploy == 'true'
-        run: |
+        run: | 
           VERSION=$(cat version.txt)
           NEW_VERSION=$(echo $VERSION | awk -F. -v OFS=. '{$NF++;print}')
           echo $NEW_VERSION > version.txt
@@ -190,12 +190,6 @@ jobs:
         run: |
           npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
           npm publish
-          
-      - name: Additional Artifact Handling
-        if: env.should_deploy == 'true'
-        run: |
-          echo "Performing additional artifact handling..."
-          zip -r react-app-build.zip ./build
         
       - name: Upload Build Artifact to GitHub
         if: env.should_deploy == 'true'
@@ -203,6 +197,17 @@ jobs:
         with:
           name: react-app-build
           path: ./sbuild
+
+      - name: Compress Build Artifacts
+        if: env.should_deploy == 'true'
+        working-directory: ./sbuild
+        run: |
+          if [ -d "./sbuild" ]; then
+            zip -r react-app-build.zip ./sbuild
+          else
+            echo "Build directory not found. Skipping compression."
+            exit 1
+          fi
 
        # Step to download the artifact
       - name: Download Build Artifact
