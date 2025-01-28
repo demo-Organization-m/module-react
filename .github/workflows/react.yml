@@ -80,7 +80,9 @@ jobs:
           node-version: '20'
 
       - name: Install Dependencies
-        run: npm install
+        run: |
+          cd sbuild
+          npm install
 
       - name: SonarQube Scan
         uses: sonarsource/sonarqube-scan-action@master
@@ -141,15 +143,20 @@ jobs:
   
       - name: Install Dependencies
         if: env.should_deploy == 'true'
-        run: npm install
+        run: |
+          cd sbuild
+          npm install
   
       - name: Build React App
         if: env.should_deploy == 'true'
-        run: npm run build
-  
+        run: |
+          cd sbuild
+          npm run build
+    
       - name: Create package.json for Build
         if: env.should_deploy == 'true'
         run: |
+          cd sbuild
           VERSION=$(cat version.txt)
           echo '{
             "name": "react-app-build",
@@ -170,6 +177,7 @@ jobs:
       - name: Login to AWS CodeArtifact
         if: env.should_deploy == 'true'
         run: |
+          cd sbuild
           aws codeartifact login \
             --tool npm \
             --repository ${{ inputs.npm-repository }} \
@@ -178,8 +186,9 @@ jobs:
   
       - name: Publish Build to AWS CodeArtifact
         if: env.should_deploy == 'true'
-        working-directory: ./build
+        working-directory: ./sbuild
         run: |
+         cd sbuild
           npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
           npm publish
   
@@ -188,7 +197,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: react-app-build
-          path: .
+          path: ./sbuild
 
        # Step to download the artifact
       - name: Download Build Artifact
