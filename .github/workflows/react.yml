@@ -112,7 +112,7 @@ jobs:
       - name: Check for Changes
         id: changes
         run: |
-          git fetch origin feature/demo
+          git fetch origin devlopment
           if git diff --exit-code HEAD origin/devlopment -- . > /dev/null; then
             echo "should_deploy=true" >> $GITHUB_ENV
           else
