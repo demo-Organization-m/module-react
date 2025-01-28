@@ -1,368 +1,335 @@
-name: Python CI/CD Pipeline
+name: React Reusable CI/CD Pipeline
 
 on:
   workflow_call:
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      SONAR_TOKEN:
+        required: true
     inputs:
-      repo_name:
-        description: 'Repository Name'
+      aws-region:
+        description: 'AWS Region'
         required: true
         type: string
-      deploy_env:
-        description: 'Deployment Environment'
+      sonar-project-key:
+        description: 'SonarQube Project Key'
         required: true
         type: string
-      build_artifacts:
-        description: 'Build Artifacts (true/false)'
-        required: false
-        type: boolean
-      python_version:
-        description: 'Python Version'
+      aws-domain:
+        description: 'AWS CodeArtifact Domain'
         required: true
         type: string
-
-env:
-  REPO_NAME: ${{ inputs.repo_name }}
-  DEPLOY_ENV: ${{ inputs.deploy_env }}
-  BUILD_ARTIFACTS: ${{ inputs.build_artifacts }}
-  PYTHON_VERSION: ${{ inputs.python_version }}
-  VERSION: ${{ github.sha }}
+      aws-domain-owner:
+        description: 'AWS CodeArtifact Domain Owner'
+        required: true
+        type: string
+      npm-repository:
+        description: 'NPM Repository Name'
+        required: true
+        type: string
+      ecr-repo-name:
+        description: 'ECR Repository Name'
+        required: true
+        type: string
 
 jobs:
-  source_checkout:
-    name: Source Checkout
+  test:
+    name: Run Unit Tests
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          repository: ${{ env.REPO_NAME }}
-          ref: ${{ github.ref }}
-  
-  unittest:
-      name: Run Unittest
-      runs-on: ubuntu-latest
-      needs: source_checkout
-      steps:
-        - name: Checkout Code
-          uses: actions/checkout@v3
-    
-        - name: Set up Python
-          uses: actions/setup-python@v4
-          with:
-            python-version: ${{ env.PYTHON_VERSION }}
-    
-        - name: Install dependencies
-          run: |
-            python -m pip install --upgrade pip
-            pip install -r */requirements.txt
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-            pip install drf_yasg
-            pip install pytest pytest-cov djangorestframework
-    
-        - name: Check for Unittest files
-          run: |
-            if [ -z "$(find ./*/tests -type f -name 'test_*.py' -exec grep -l 'unittest' {} +)" ]; then
-              echo "No Unittest files found."
-              exit 1
-            fi
-    
-        - name: Run unit tests
-          env:
-            PYTHONPATH: ./*
-            DJANGO_SETTINGS_MODULE: ncarp.settings  # Replace with your actual Django settings module
-          run: python */manage.py test
-  
-  pytest:
-    name: Run Pytest
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          npm install --save-dev @babel/plugin-transform-private-property-in-object \
+            @babel/plugin-transform-optional-chaining \
+            @babel/plugin-transform-nullish-coalescing-operator \
+            @babel/plugin-transform-class-properties
+          npm install --save-dev @testing-library/react @testing-library/jest-dom
+          npm audit fix || true
+
+      - name: Run Unit Tests with Jest
+        run: npm test -- --watchAll=false --coverage --forceExit
+
+  sonarqube:
+    name: SonarQube Scan
     runs-on: ubuntu-latest
-    needs: unittest
+    needs: test
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-  
-      - name: Set up Python
-        uses: actions/setup-python@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-  
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r */requirements.txt
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install drf_yasg
-          pip install pytest pytest-cov djangorestframework
-  
-      - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=${{ github.workspace }}" >> $GITHUB_ENV
-  
-      - name: Check for Pytest files
-        run: |
-          if [ -z "$(find ./*/tests -type f -name 'test_*.py' -exec grep -l 'pytest' {} +)" ]; then
-            echo "No Pytest files found."
-            exit 1
-          fi
-  
-      - name: Run Pytest
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          DJANGO_SETTINGS_MODULE: ncarp.settings
-        run: |
-          cd sustainos
-          pytest tests --import-mode=append
+          node-version: '20'
 
-
-  coverage_and_sonarqube:
-    name: SonarQube Analysis
-    runs-on: ubuntu-latest
-    needs: pytest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-        with:
-          repository: ${{ env.REPO_NAME }}
-          ref: ${{ github.ref }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-cov coverage
-          pip install pytest pytest-cov djangorestframework
-
-      - name: Code Coverage
-        run: |
-          pytest --cov=sustainos/tests --cov-report=xml:coverage.xml sustainos/tests
-          coverage report
+      - name: Install Dependencies
+        run: npm install
 
       - name: SonarQube Scan
-        id: sonarqube_scan
         uses: sonarsource/sonarqube-scan-action@master
-        with:
-          projectBaseDir: .
-          args: >
-            -Dsonar.projectKey=Python_app
-            -Dsonar.sources=sustainos/
-            -Dsonar.python.coverage.reportPaths=coverage.xml
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          
-      - name: Checks quality gate
-        uses: sonarsource/sonarqube-quality-gate-action@v1
+        with:
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+            -Dsonar.sources=./
+            -Dsonar.test.inclusions="**/*.test.js"
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        
-  build_and_publish_package:
-    name: Build, Publish, and Deploy Package
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  build_and_publish_artifact:
+    name: Build Artifact
     runs-on: ubuntu-latest
-    needs: coverage_and_sonarqube
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
-        
-      - name: Set Up Python
-        uses: actions/setup-python@v4
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v3
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
+          node-version: '20'
+
       - name: Check for Changes
         id: changes
         run: |
-          git fetch origin development
-          if git diff --exit-code HEAD origin/development -- . > /dev/null; then
-            echo "Changes detected. Proceeding with version bump and deployment."
+          git fetch origin feature/demo
+          if git diff --exit-code HEAD origin/feature/demo -- . > /dev/null; then
             echo "should_deploy=true" >> $GITHUB_ENV
           else
-            echo "No changes detected. Skipping version bump and deployment."
             echo "should_deploy=false" >> $GITHUB_ENV
           fi
-          
+
       - name: Set Deploy Output
         id: set_deploy_output
         run: echo "::set-output name=should_deploy::${{ env.should_deploy }}"
-  
-      - name: Increment Version (if needed)
+
+      - name: Increment Version
         if: env.should_deploy == 'true'
         run: |
-          python bump_version.py
+          VERSION=$(cat version.txt)
+          NEW_VERSION=$(echo $VERSION | awk -F. -v OFS=. '{$NF++;print}')
+          echo $NEW_VERSION > version.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://${{ secrets.MY_GITHUB_TOKEN }}@github.com/${{ env.REPO_NAME }}.git
-          git commit -am "Bump version to $(cat version.txt)"
+          git remote set-url origin https://${{ secrets.MY_GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add version.txt
+          git commit -m "chore: bump version to $NEW_VERSION"
           git push
-  
-      - name: Install Build Tools
+
+      - name: Install Dependencies
+        if: env.should_deploy == 'true'
+        run: npm install
+
+      - name: Build React App
+        if: env.should_deploy == 'true'
+        run: npm run build
+
+      - name: Create package.json for Build
         if: env.should_deploy == 'true'
         run: |
-          python -m pip install --upgrade pip
-          pip install setuptools wheel twine
-  
-      - name: Build Python Package
-        if: env.should_deploy == 'true'
-        run: |
-          python setup.py sdist bdist_wheel
-  
+          VERSION=$(cat version.txt)
+          echo '{
+            "name": "react-app-build",
+            "version": "'$VERSION'",
+            "description": "React App Build Artifact",
+            "main": "index.js",
+            "license": "MIT"
+          }' > build/package.json
+
       - name: Configure AWS Credentials
         if: env.should_deploy == 'true'
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-  
+          aws-region: ${{ inputs.aws-region }}
+
       - name: Login to AWS CodeArtifact
         if: env.should_deploy == 'true'
         run: |
           aws codeartifact login \
-            --tool twine \
-            --repository pypi-store \
-            --domain aeiforo \
-            --domain-owner 061039767866
-  
-      - name: Publish Package
-        if: env.should_deploy == 'true'
-        run: |
-          twine upload --repository codeartifact --verbose dist/*
-  
-      - name: Upload Package Artifact to AWS
-        if: env.should_deploy == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: sustainos-package
-          path: dist/*
+            --tool npm \
+            --repository ${{ inputs.npm-repository }} \
+            --domain ${{ inputs.aws-domain }} \
+            --domain-owner ${{ inputs.aws-domain-owner }}
 
-       # Step 1: Download the artifact from the previous job
-      - name: Download Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sustainos-package  # The name of the artifact from the previous job
-          path: artifact-output    # Directory where the artifact will be downloaded
-      
-      # Step 2: Unzip the downloaded artifact locally for debugging
-      - name: Unzip Artifact Locally
-        run: |
-          mkdir -p extracted
-          unzip artifact-output/*.zip -d extracted
-          echo "Artifact extracted to 'extracted' directory."
-          pwd
-          ls
-          echo "Searching for requirements.txt..."
-          find extracted -name "requirements.txt" -type f
-  
-      - name: Get version from version.txt
-        id: version
-        run: echo "::set-output name=version::$(cat version.txt)"
-      
-      - name: Build Docker Image with Version
-        run: |
-          docker build --build-arg ARTIFACT_VERSION=${{ steps.version.outputs.version }} -t my-app-image .
-      
-      # Set up Docker image for deployment to ECR
-      - name: Set up Docker image for deployment
+      - name: Publish Build to AWS CodeArtifact
         if: env.should_deploy == 'true'
+        working-directory: ./build
         run: |
-          # Retrieve the highest existing version tag (v1, v2, ...) and increment it
+          npm set registry "https://${{ inputs.aws-domain }}-${{ inputs.aws-domain-owner }}.d.codeartifact.${{ inputs.aws-region }}.amazonaws.com/npm/${{ inputs.npm-repository }}/"
+          npm publish
+
+      - name: Upload Build Artifact to GitHub
+        if: env.should_deploy == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: react-app-build
+          path: build/
+          
+
+  docker:
+    name: Docker Build and Deploy
+    runs-on: ubuntu-latest
+    needs:  build_and_publish_artifact
+  
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+  
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws-region }}
+  
+      - name: Get Version from version.txt
+        id: version
+        run: echo "version=$(cat version.txt)" >> $GITHUB_ENV
+  
+      - name: Retrieve Existing Version from ECR
+        id: ecr-version
+        run: |
           EXISTING_TAG=$(aws ecr describe-images \
-            --repository-name ${{ secrets.ECR_REPO_NAME }} \
+            --repository-name ${{ inputs.ecr-repo-name }} \
             --query 'imageDetails[].imageTags[]' \
             --output text | grep -o 'v[0-9]*' | sed 's/v//' | sort -n | tail -1 2>/dev/null || echo 0)
-      
-          # Increment the version for the new tag
+          echo "EXISTING_TAG=$EXISTING_TAG" >> $GITHUB_ENV
+  
+      - name: Increment Version
+        id: increment-version
+        run: |
           NEW_VERSION_TAG=v$((EXISTING_TAG + 1))
+          echo "NEW_VERSION_TAG=$NEW_VERSION_TAG" >> $GITHUB_ENV
+          echo "NEW_VERSION_TAG=$NEW_VERSION_TAG"
+  
+      - name: Prepare Build Context
+        run: |
+          echo "Navigating to project directory:"
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          echo "Current directory:"
+          pwd
+          echo "Ensuring 'extracted-package' exists:"
+          if [ ! -d "extracted-package" ]; then
+            echo "'extracted-package' directory is missing! Creating it now..."
+            mkdir extracted-package
+          else
+            echo "'extracted-package' directory exists."
+          fi
+          echo "Copying everything to 'extracted-package' directory, excluding itself:"
+          find . -mindepth 1 -maxdepth 1 ! -name 'extracted-package' -exec cp -r {} extracted-package/ \;
+          echo "Listing files in the project directory:"
+          ls -la
+          echo "Verifying extracted-package contents:"
+          ls -la extracted-package
       
-          # Authenticate Docker to AWS ECR
-          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-      
-          # Build the Docker image with the version tag and latest tag
-          docker build --build-arg ARTIFACT_VERSION=${{ steps.version.outputs.version }} \
-            -t ${{ secrets.ECR_REPO_NAME }}:${NEW_VERSION_TAG} \
-            -t ${{ secrets.ECR_REPO_NAME }}:latest .
-      
-          # Tag the image for ECR with both the version tag and latest tag
-          docker tag ${{ secrets.ECR_REPO_NAME }}:${NEW_VERSION_TAG} ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:${NEW_VERSION_TAG}
-          docker tag ${{ secrets.ECR_REPO_NAME }}:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-      
-          # Push the image to ECR with both tags
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:${NEW_VERSION_TAG}
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-      
-          
-      
+
+      - name: Build Docker Image
+        run: |
+          echo "Navigating to project directory:"
+          cd /home/runner/work/dt-frontend-repo/dt-frontend-repo
+          echo "Building Docker image..."
+          docker build --build-arg ARTIFACT_VERSION=${{ env.NEW_VERSION_TAG }} \
+          -t ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
+          -t ${{ inputs.ecr-repo-name }}:latest \
+          .
+
+  
+      - name: Authenticate Docker with ECR
+        run: |
+          aws ecr get-login-password --region ${{ inputs.aws-region }} | \
+          docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com
+  
+      - name: Tag and Push Docker Images
+        run: |
+          docker tag ${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }} \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }}
+          docker tag ${{ inputs.ecr-repo-name }}:latest \
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:${{ env.NEW_VERSION_TAG }}
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.ecr-repo-name }}:latest
+
       - name: SSH to EC2 and deploy Docker container
-        if: env.should_deploy == 'true'
         run: |
           # Create a temporary SSH key file
           echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
           chmod 600 ec2_key.pem
-      
+
           # Add EC2's SSH host key to known_hosts to avoid host key verification issues
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.EC2_PUBLIC_IP }} >> ~/.ssh/known_hosts
-      
+
           # SSH to the EC2 instance and run commands
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} << 'EOF'
             # Install Docker if it's not installed
             if ! command -v docker &> /dev/null
             then
               echo "Docker not found, installing..."
-              sudo yum update -y
+              sudo yum update -y docker 
               sudo yum install -y docker
               sudo service docker start
               sudo systemctl enable docker
             else
               echo "Docker is already installed"
             fi
-      
+
             # Add ec2-user to Docker group to allow non-root access to Docker
             sudo usermod -aG docker ec2-user
             newgrp docker
-      
+
             # Authenticate Docker to AWS ECR
             aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-      
-            # Remove existing container with the same name
-            if [ "$(docker ps -aq -f name=my-app-container)" ]; then
-              echo "Removing existing container 'my-app-container'..."
-              docker stop my-app-container
-              docker rm my-app-container
+
+            # Remove existing container with the same name (for React app)
+            if [ "$(docker ps -aq -f name=react-container)" ]; then
+              echo "Removing existing container 'react-container'..."
+              docker stop react-container
+              docker rm react-container
             fi
-      
-            # Pull the Docker image from ECR
+
+            # Pull the latest Docker image from ECR
             echo "Pulling the latest Docker image..."
             docker pull ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-      
-            # Run the container
-            echo "Deploying the new container..."
-            docker run -d -p 9000:9000 --name my-app-container \
-              -e DATABASE_NAME="${{ secrets.DATABASE_NAME }}" \
-              -e DATABASE_USER="${{ secrets.DATABASE_USER }}" \
-              -e DATABASE_PASSWORD="${{ secrets.DATABASE_PASSWORD }}" \
-              -e DATABASE_HOST="${{ secrets.DATABASE_HOST }}" \
-              -e DATABASE_PORT="${{ secrets.DATABASE_PORT }}" \
-              -e EMAIL_BACKEND="${{ secrets.EMAIL_BACKEND }}" \
-              -e CENTRALIZED_HOSTED_URL="${{ secrets.CENTRALIZED_HOSTED_URL }}" \
-              -e EMAIL_HOST_USER="${{ secrets.EMAIL_HOST_USER }}" \
-              -e EMAIL_HOST_PASSWORD="${{ secrets.EMAIL_HOST_PASSWORD }}" \
-              -e SECRET_KEY="${{ secrets.SECRET_KEY }}" \
-              ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
-      
+
+            # Run the new container with the name 'react-container'
+            echo "Deploying the new container 'react-container'..."
+            - name: Run Docker Container
+              docker run -d -p 8001:80 --name react-container ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/${{ secrets.ECR_REPO_NAME }}:latest
+
+
             # Verify the container is running
-            if ! docker ps -q -f name=my-app-container; then
-              echo "Failed to start the container 'my-app-container'. Exiting."
+            if ! docker ps -q -f name=react-container; then
+              echo "Failed to start the container 'react-container'. Exiting."
               exit 1
             fi
-            echo "Container 'my-app-container' is running successfully."
+            echo "Container 'react-container' is running successfully."
           EOF
-      
+
       - name: List Docker Images on EC2
         run: |
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker images"
-      
+
       - name: List Running Containers on EC2
         run: |
           ssh -i ec2_key.pem ec2-user@${{ secrets.EC2_PUBLIC_IP }} "sudo docker ps -a"
